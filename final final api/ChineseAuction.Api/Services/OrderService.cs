@@ -2,6 +2,7 @@
 using ChineseAuction.Api.Dtos;
 using ChineseAuction.Api.Models;
 using ChineseAuction.Api.Repositories;
+using System.Text;
 
 namespace ChineseAuction.Api.Services
 {
@@ -9,15 +10,31 @@ namespace ChineseAuction.Api.Services
     {
         private readonly IOrderRepository _orderRepo;
         private readonly IGiftRepository _giftRepo;
+        private readonly IUserRepository _userRepo;
         private readonly IMapper _mapper;
         private readonly ILogger<OrderService> _logger;
+        private readonly IEmailSender _emailSender;
+        private readonly IKafkaProducer _kafka;
+        private readonly string _orderTopic;
 
-        public OrderService(IOrderRepository orderRepo, IGiftRepository giftRepo, IMapper mapper, ILogger<OrderService> logger)
+        public OrderService(
+            IOrderRepository orderRepo,
+            IGiftRepository giftRepo,
+            IUserRepository userRepo,
+            IMapper mapper,
+            ILogger<OrderService> logger,
+            IEmailSender emailSender,
+            IKafkaProducer kafka,
+            IConfiguration config)
         {
             _orderRepo = orderRepo;
             _giftRepo = giftRepo;
+            _userRepo = userRepo;
             _mapper = mapper;
             _logger = logger;
+            _emailSender = emailSender;
+            _kafka = kafka;
+            _orderTopic = config["Kafka:OrderConfirmedTopic"] ?? "order-confirmed";
         }
 
         // Get all orders
@@ -148,9 +165,7 @@ namespace ChineseAuction.Api.Services
                 if (gift != null) sum += (gift.TicketPrice * item.Quantity);
             }
             return sum;
-        }
-
-        //אישור הזמנה
+        }        //אישור הזמנה
         public async Task<bool> ConfirmOrderAsync(int id)
         {
             var order = await _orderRepo.GetByIdAsync(id);
@@ -158,7 +173,86 @@ namespace ChineseAuction.Api.Services
 
             order.Status = Status.IsConfirmed;
             await _orderRepo.UpdateAsync(order);
+
+            var user = await _userRepo.GetByIdAsync(order.UserId);
+
+            // ── Kafka event ──────────────────────────────────────────────
+            try
+            {
+                var kafkaEvent = new OrderConfirmedEvent
+                {
+                    OrderId     = order.Id,
+                    UserId      = order.UserId,
+                    UserName    = user?.Name ?? string.Empty,
+                    UserEmail   = user?.Email ?? string.Empty,
+                    TotalAmount = order.TotalAmount,
+                    ConfirmedAt = DateTime.UtcNow,
+                    Items = order.OrderItems.Select(oi => new OrderConfirmedEventItem
+                    {
+                        GiftId    = oi.GiftId,
+                        GiftName  = oi.Gift?.Name ?? $"Gift#{oi.GiftId}",
+                        Quantity  = oi.Quantity,
+                        UnitPrice = oi.Gift?.TicketPrice ?? 0,
+                        LineTotal = (oi.Gift?.TicketPrice ?? 0) * oi.Quantity
+                    }).ToList()
+                };
+                await _kafka.PublishAsync(_orderTopic, order.Id.ToString(), kafkaEvent);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to publish Kafka event for order #{OrderId}", id);
+            }
+
+            // ── Email ─────────────────────────────────────────────────────
+            try
+            {
+                if (user != null && !string.IsNullOrWhiteSpace(user.Email))
+                {
+                    var subject = $"✅ אישור הזמנה #{order.Id} - Chinese Auction";
+                    var body    = BuildOrderConfirmationEmail(order, user);
+                    await _emailSender.SendEmailAsync(user.Email, subject, body);
+                    _logger.LogInformation("Order confirmation email sent to {Email} for order #{OrderId}", user.Email, order.Id);
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to send confirmation email for order #{OrderId}", id);
+            }
+
             return true;
+        }
+
+        /// <summary>
+        /// Builds a detailed order confirmation email body.
+        /// </summary>
+        private static string BuildOrderConfirmationEmail(Order order, User user)
+        {
+            var sb = new StringBuilder();
+            sb.AppendLine($"שלום {user.Name},");
+            sb.AppendLine();
+            sb.AppendLine($"הזמנתך #{order.Id} אושרה בהצלחה! 🎉");
+            sb.AppendLine($"תאריך הזמנה: {order.OrderDate:dd/MM/yyyy HH:mm}");
+            sb.AppendLine();
+            sb.AppendLine("פרטי הפריטים שנרכשו:");
+            sb.AppendLine("─────────────────────────────────────");
+
+            foreach (var item in order.OrderItems)
+            {
+                var giftName = item.Gift?.Name ?? $"מתנה #{item.GiftId}";
+                var unitPrice = item.Gift?.TicketPrice ?? 0;
+                var lineTotal = unitPrice * item.Quantity;
+                sb.AppendLine($"  • {giftName}");
+                sb.AppendLine($"    כמות כרטיסים: {item.Quantity}  |  מחיר ליחידה: ₪{unitPrice:F2}  |  סה\"כ: ₪{lineTotal:F2}");
+            }
+
+            sb.AppendLine("─────────────────────────────────────");
+            sb.AppendLine($"סה\"כ לתשלום: ₪{order.TotalAmount:F2}");
+            sb.AppendLine();
+            sb.AppendLine("בהצלחה בהגרלה! 🍀");
+            sb.AppendLine();
+            sb.AppendLine("בברכה,");
+            sb.AppendLine("צוות Chinese Auction");
+            return sb.ToString();
         }
 
 

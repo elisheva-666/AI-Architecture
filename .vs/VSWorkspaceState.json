@@ -1,0 +1,12 @@
+{
+  "ExpandedNodes": [
+    "",
+    "\\final final api",
+    "\\final final api\\ChineseAuction.Api",
+    "\\final final api\\ChineseAuction.Api\\Services",
+    "\\final final api\\KafkaConsumer.Worker",
+    "\\final final api\\KafkaConsumer.Worker\\Events"
+  ],
+  "SelectedNode": "\\final final api\\ChineseAuction.Api\\Services\\OrderService.cs",
+  "PreviewInSolutionExplorer": false
+}

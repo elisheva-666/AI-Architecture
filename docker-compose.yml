@@ -1,7 +1,7 @@
 version: '3.8'
 
 services:
-  # ─── ASP.NET Core 8 API ───────────────────────────────────────────────────
+  # ─── ASP.NET Core 8 API ──────────────────────────────────────────────────
   api:
     build:
       context: .
@@ -12,14 +12,18 @@ services:
     environment:
       - ASPNETCORE_ENVIRONMENT=Development
       - ASPNETCORE_URLS=http://+:8080
-      # Override the connection string to reach SQL Server on the host machine
       - ConnectionStrings__DefaultConnection=Server=host.docker.internal;Database=ChineseAuctionDB;Trusted_Connection=False;User Id=sa;Password=YourPassword123!;TrustServerCertificate=True
-      # Override Jwt settings if needed
+      - Redis__ConnectionString=redis:6379,password=elisheva-666
       - Jwt__Key=8F9A2D7E4B1C6A9F3E5D0B7C8A4E2F9D
       - Jwt__Issuer=ChineseAuction
       - Jwt__Audience=ChineseAuctionClients
+      - Kafka__BootstrapServers=kafka:9092
+      - Kafka__OrderConfirmedTopic=order-confirmed
+      - Kafka__LotteryDrawnTopic=lottery-drawn
     depends_on:
       redis:
+        condition: service_healthy
+      kafka:
         condition: service_healthy
     networks:
       - auction-network
@@ -29,7 +33,7 @@ services:
       - api_reports:/app/Reports
       - api_wwwroot:/app/wwwroot
 
-  # ─── Redis (Caching) ──────────────────────────────────────────────────────
+  # ─── Redis (Caching) ─────────────────────────────────────────────────────
   redis:
     image: redis:7-alpine
     container_name: chinese-auction-redis
@@ -39,7 +43,7 @@ services:
     volumes:
       - redis_data:/data
     healthcheck:
-      test: ["CMD", "redis-cli", "--raw", "incr", "ping"]
+      test: ["CMD", "redis-cli", "-a", "elisheva-666", "ping"]
       interval: 10s
       timeout: 3s
       retries: 5
@@ -47,8 +51,66 @@ services:
       - auction-network
     restart: unless-stopped
 
+# ─── Kafka (Confluent) ──────────────────────────────────────────────────
+  kafka:
+    image: confluentinc/cp-kafka:latest
+    container_name: chinese-auction-kafka
+    ports:
+      - "9092:9092"
+      - "9093:9093"
+    environment:
+      - KAFKA_NODE_ID=1
+      - KAFKA_PROCESS_ROLES=broker,controller
+      - KAFKA_CONTROLLER_QUORUM_VOTERS=1@kafka:9093
+      - KAFKA_LISTENERS=PLAINTEXT://:9092,CONTROLLER://:9093
+      - KAFKA_ADVERTISED_LISTENERS=PLAINTEXT://kafka:9092
+      - KAFKA_CONTROLLER_LISTENER_NAMES=CONTROLLER
+      - KAFKA_LISTENER_SECURITY_PROTOCOL_MAP=CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      - KAFKA_INTER_BROKER_LISTENER_NAME=PLAINTEXT
+      - KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR=1
+      - CLUSTER_ID=ciWo7IWazngRchmPESDPnd
+    networks:
+      - auction-network
+    restart: unless-stopped
+
+  # ─── Kafka UI ────────────────────────────────────────────────────────────
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    container_name: chinese-auction-kafka-ui
+    ports:
+      - "8090:8080"
+    environment:
+      - KAFKA_CLUSTERS_0_NAME=local
+      - KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS=kafka:9092
+    depends_on:
+      kafka:
+        condition: service_healthy
+    networks:
+      - auction-network
+    restart: unless-stopped
+
+  # ─── Kafka Consumer Worker ────────────────────────────────────────────────
+  kafka-consumer:
+    build:
+      context: .
+      dockerfile: Dockerfile.Consumer
+    container_name: chinese-auction-consumer
+    environment:
+      - Kafka__BootstrapServers=kafka:9092
+      - Kafka__ConsumerGroupId=auction-consumer-group
+      - Kafka__OrderConfirmedTopic=order-confirmed
+      - Kafka__LotteryDrawnTopic=lottery-drawn
+    depends_on:
+      kafka:
+        condition: service_healthy
+    networks:
+      - auction-network
+    restart: unless-stopped
+
 volumes:
   redis_data:
+    driver: local
+  kafka_data:
     driver: local
   api_logs:
     driver: local

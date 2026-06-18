@@ -87,6 +87,11 @@ builder.Services.AddStackExchangeRedisCache(options =>
 builder.Services.AddSingleton<ICacheService, RedisCacheService>();
 
 // =======================
+// Kafka Producer
+// =======================
+builder.Services.AddSingleton<IKafkaProducer, KafkaProducerService>();
+
+// =======================
 // DbContext
 // =======================
 builder.Services.AddDbContext<AppDbContext>(options =>

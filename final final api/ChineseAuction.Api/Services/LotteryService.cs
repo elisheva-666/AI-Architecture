@@ -4,6 +4,7 @@ using ChineseAuction.Api.Models;
 using ChineseAuction.Api.Repositories;
 using Microsoft.Extensions.Logging;
 using System.Globalization;
+using System.Text;
 
 namespace ChineseAuction.Api.Services
 {
@@ -17,7 +18,8 @@ namespace ChineseAuction.Api.Services
         private readonly ILogger<LotteryService> _logger;
         private readonly string _reportsPath;
         private readonly IEmailSender _emailSender;
-
+        private readonly IKafkaProducer _kafka;
+        private readonly string _lotteryTopic;
 
         public LotteryService(
             IOrderRepository orderRepo,
@@ -27,32 +29,35 @@ namespace ChineseAuction.Api.Services
             IMapper mapper,
             ILogger<LotteryService> logger,
             IWebHostEnvironment env,
-            IEmailSender emailSender)
+            IEmailSender emailSender,
+            IKafkaProducer kafka,
+            IConfiguration config)
         {
-            _orderRepo = orderRepo;
-            _giftRepo = giftRepo;
-            _lotteryRepo = lotteryRepo;
-            _userRepo = userRepo;
-            _mapper = mapper;
-            _logger = logger;
-            _emailSender = emailSender;
+            _orderRepo    = orderRepo;
+            _giftRepo     = giftRepo;
+            _lotteryRepo  = lotteryRepo;
+            _userRepo     = userRepo;
+            _mapper       = mapper;
+            _logger       = logger;
+            _emailSender  = emailSender;
+            _kafka        = kafka;
+            _lotteryTopic = config["Kafka:LotteryDrawnTopic"] ?? "lottery-drawn";
 
-            // Reports folder in app root
             _reportsPath = Path.Combine(env.ContentRootPath, "Reports");
             if (!Directory.Exists(_reportsPath)) Directory.CreateDirectory(_reportsPath);
         }
 
         /// <summary>
-        /// âåøì æåëä òáåø îúğä àçú - îñúîê òì äæîğåú îàåùøåú. àí àéï ëøèéñéí îåçæø null.
-        /// ùåîø àú ä-Winner áîñã å îåñéó øùåîä ì÷åáõ Winners.csv
+        /// ï¿½ï¿½ï¿½ï¿½ ï¿½ï¿½ï¿½ï¿½ ï¿½ï¿½ï¿½ï¿½ ï¿½ï¿½ï¿½ï¿½ ï¿½ï¿½ï¿½ - ï¿½ï¿½ï¿½ï¿½ï¿½ ï¿½ï¿½ ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½. ï¿½ï¿½ ï¿½ï¿½ï¿½ ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ ï¿½ï¿½ï¿½ï¿½ï¿½ null.
+        /// ï¿½ï¿½ï¿½ï¿½ ï¿½ï¿½ ï¿½-Winner ï¿½ï¿½ï¿½ï¿½ ï¿½ ï¿½ï¿½ï¿½ï¿½ï¿½ ï¿½ï¿½ï¿½ï¿½ï¿½ ï¿½ï¿½ï¿½ï¿½ï¿½ Winners.csv
         /// </summary>
         public async Task<WinnerResultDto?> DrawForGiftAsync(int giftId)
         {
-            // 1. ÷áì àú ëì ääæîğåú ùîëéìåú àú äîúğä äæå
+            // 1. ï¿½ï¿½ï¿½ ï¿½ï¿½ ï¿½ï¿½ ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ ï¿½ï¿½ ï¿½ï¿½ï¿½ï¿½ï¿½ ï¿½ï¿½ï¿½
             var orders = await _orderRepo.GetByGiftIdAsync(giftId);
             var confirmed = orders.Where(o => o.Status == Status.IsConfirmed).ToList();
 
-            // 2. çùá ëîåú ëøèéñéí ìëì îùúîù òáåø äîúğä äæå
+            // 2. ï¿½ï¿½ï¿½ ï¿½ï¿½ï¿½ï¿½ ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ ï¿½ï¿½ï¿½ ï¿½ï¿½ï¿½ï¿½ï¿½ ï¿½ï¿½ï¿½ï¿½ ï¿½ï¿½ï¿½ï¿½ï¿½ ï¿½ï¿½ï¿½
             var ticketsByUser = new Dictionary<int, int>(); // userId -> ticket count
             string giftName = string.Empty;
 
@@ -69,7 +74,7 @@ namespace ChineseAuction.Api.Services
             var totalTickets = ticketsByUser.Values.Sum();
             if (totalTickets == 0) return null;
 
-            // 3. áçéøú æåëä ìôé îù÷ì (ëîåú ëøèéñéí)
+            // 3. ï¿½ï¿½ï¿½ï¿½ï¿½ ï¿½ï¿½ï¿½ï¿½ ï¿½ï¿½ï¿½ ï¿½ï¿½ï¿½ï¿½ (ï¿½ï¿½ï¿½ï¿½ ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½)
             var rng = new Random();
             var pick = rng.Next(1, totalTickets + 1); // [1..totalTickets]
             var cumulative = 0;
@@ -84,7 +89,7 @@ namespace ChineseAuction.Api.Services
                 }
             }
 
-            // 4. ÷áì ôøèé îùúîù
+            // 4. ï¿½ï¿½ï¿½ ï¿½ï¿½ï¿½ï¿½ ï¿½ï¿½ï¿½ï¿½ï¿½
             var user = await _userRepo.GetByIdAsync(winnerUserId);
             if (user == null)
             {
@@ -92,7 +97,7 @@ namespace ChineseAuction.Api.Services
                 return null;
             }
 
-            // 5. ùîéøú æåëä áîñã
+            // 5. ï¿½ï¿½ï¿½ï¿½ï¿½ ï¿½ï¿½ï¿½ï¿½ ï¿½ï¿½ï¿½ï¿½
             var winnerEntity = new Winner
             {
                 GiftId = giftId,
@@ -101,7 +106,7 @@ namespace ChineseAuction.Api.Services
 
             var savedWinner = await _lotteryRepo.SaveWinnerAsync(winnerEntity);
 
-            // 6. äô÷ú DTO åúéòåã áãéñ÷ (Winners.csv)
+            // 6. ï¿½ï¿½ï¿½ï¿½ DTO ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ ï¿½ï¿½ï¿½ï¿½ï¿½ (Winners.csv)
             var result = new WinnerResultDto
             {
                 GiftId = giftId,
@@ -111,16 +116,35 @@ namespace ChineseAuction.Api.Services
                 WinnerEmail = user.Email,
                 TotalTickets = totalTickets,
                 DrawDate = DateTime.UtcNow
-            };
+            };            AppendWinnerReport(result);
 
-            AppendWinnerReport(result);
+            // â”€â”€ Kafka event â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+            try
+            {
+                var kafkaEvent = new LotteryDrawnEvent
+                {
+                    GiftId       = result.GiftId,
+                    GiftName     = result.GiftName,
+                    WinnerUserId = result.WinnerUserId,
+                    WinnerName   = result.WinnerName,
+                    WinnerEmail  = result.WinnerEmail ?? string.Empty,
+                    TotalTickets = result.TotalTickets,
+                    DrawnAt      = result.DrawDate
+                };
+                await _kafka.PublishAsync(_lotteryTopic, giftId.ToString(), kafkaEvent);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to publish Kafka lottery event for gift #{GiftId}", giftId);
+            }
 
+            // â”€â”€ Email â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
             try
             {
                 if (!string.IsNullOrWhiteSpace(result.WinnerEmail))
                 {
-                    var subject = $"Congratulations! You won the gift: {result.GiftName}";
-                    var body = $"Dear {result.WinnerName},\n\nCongratulations! You have won the gift \"{result.GiftName}\" in the Chinese Auction.\n\nBest regards,\nThe Auction Team";
+                    var subject = $"ğŸ† ××–×œ ×˜×•×‘! ×–×›×™×ª ×‘××ª× ×”: {result.GiftName}";
+                    var body    = BuildWinnerEmail(result);
                     await _emailSender.SendEmailAsync(result.WinnerEmail, subject, body);
                 }
             }
@@ -133,8 +157,8 @@ namespace ChineseAuction.Api.Services
         }
 
         /// <summary>
-        /// îøéõ äâøìä ìëì îúğä ù÷ééîåú òáåøä ëøèéñéí (îáåññ òì îúğåú ùğîëøå),
-        /// ùåîø àú ëì äæåëéí åéåöø ãåç äëğñåú (Revenue.csv).
+        /// ï¿½ï¿½ï¿½ï¿½ ï¿½ï¿½ï¿½ï¿½ï¿½ ï¿½ï¿½ï¿½ ï¿½ï¿½ï¿½ï¿½ ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ ï¿½ï¿½ï¿½ï¿½ï¿½ ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ (ï¿½ï¿½ï¿½ï¿½ï¿½ ï¿½ï¿½ ï¿½ï¿½ï¿½ï¿½ï¿½ ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½),
+        /// ï¿½ï¿½ï¿½ï¿½ ï¿½ï¿½ ï¿½ï¿½ ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ ï¿½ï¿½ï¿½ï¿½ï¿½ ï¿½ï¿½ï¿½ ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ (Revenue.csv).
         /// </summary>
         public async Task<IEnumerable<WinnerResultDto>> DrawAllAsync()
         {
@@ -175,9 +199,7 @@ namespace ChineseAuction.Api.Services
             {
                 _logger.LogError(ex, "Failed to append winner report");
             }
-        }
-
-        // Append or create Revenue.csv with timestamp and total revenue
+        }        // Append or create Revenue.csv with timestamp and total revenue
         private void AppendRevenueReport(decimal totalRevenue)
         {
             try
@@ -196,6 +218,31 @@ namespace ChineseAuction.Api.Services
             {
                 _logger.LogError(ex, "Failed to append revenue report");
             }
+        }
+
+        /// <summary>
+        /// Builds a detailed lottery winner notification email.
+        /// </summary>
+        private static string BuildWinnerEmail(WinnerResultDto result)
+        {
+            var sb = new StringBuilder();
+            sb.AppendLine($"×©×œ×•× {result.WinnerName},");
+            sb.AppendLine();
+            sb.AppendLine($"ğŸ† ××–×œ ×˜×•×‘! ×–×›×™×ª ×‘×”×’×¨×œ×ª Chinese Auction!");
+            sb.AppendLine();
+            sb.AppendLine("×¤×¨×˜×™ ×”×–×›×™×™×”:");
+            sb.AppendLine("â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€");
+            sb.AppendLine($"  ğŸ ××ª× ×”:          {result.GiftName}");
+            sb.AppendLine($"  ğŸ“… ×ª××¨×™×š ×”×’×¨×œ×”:   {result.DrawDate:dd/MM/yyyy HH:mm}");
+            sb.AppendLine($"  ğŸ« ×¡×”\"×› ×›×¨×˜×™×¡×™×:  {result.TotalTickets}");
+            sb.AppendLine($"  ğŸ‘¤ ×¤×¨×˜×™ ×”×–×•×›×”:    {result.WinnerName} ({result.WinnerEmail})");
+            sb.AppendLine("â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€");
+            sb.AppendLine();
+            sb.AppendLine("× ×¦×™×’× ×• ×™×¦×¨×• ××™×ª×š ×§×©×¨ ×‘×”×§×“× ×œ×ª×™××•× ××¡×™×¨×ª ×”×¤×¨×¡.");
+            sb.AppendLine();
+            sb.AppendLine("×‘×‘×¨×›×”,");
+            sb.AppendLine("×¦×•×•×ª Chinese Auction ğŸ‰");
+            return sb.ToString();
         }
     }
 }
