@@ -1,0 +1,62 @@
+version: '3.8'
+
+services:
+  # ─── ASP.NET Core 8 API ───────────────────────────────────────────────────
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: chinese-auction-api
+    ports:
+      - "8080:8080"
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Development
+      - ASPNETCORE_URLS=http://+:8080
+      # Override the connection string to reach SQL Server on the host machine
+      - ConnectionStrings__DefaultConnection=Server=host.docker.internal;Database=ChineseAuctionDB;Trusted_Connection=False;User Id=sa;Password=YourPassword123!;TrustServerCertificate=True
+      # Override Jwt settings if needed
+      - Jwt__Key=8F9A2D7E4B1C6A9F3E5D0B7C8A4E2F9D
+      - Jwt__Issuer=ChineseAuction
+      - Jwt__Audience=ChineseAuctionClients
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - auction-network
+    restart: unless-stopped
+    volumes:
+      - api_logs:/app/logs
+      - api_reports:/app/Reports
+      - api_wwwroot:/app/wwwroot
+
+  # ─── Redis (Caching) ──────────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: chinese-auction-redis
+    ports:
+      - "6379:6379"
+    command: redis-server --requirepass elisheva-666
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "--raw", "incr", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    networks:
+      - auction-network
+    restart: unless-stopped
+
+volumes:
+  redis_data:
+    driver: local
+  api_logs:
+    driver: local
+  api_reports:
+    driver: local
+  api_wwwroot:
+    driver: local
+
+networks:
+  auction-network:
+    driver: bridge

@@ -1,0 +1,57 @@
+############################
+# Build results
+############################
+bin/
+obj/
+
+############################
+# Visual Studio
+############################
+.vs/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+############################
+# VS Code / Rider
+############################
+.vscode/
+.idea/
+
+############################
+# Logs
+############################
+*.log
+logs/
+log-*.txt
+
+############################
+# OS files
+############################
+.DS_Store
+Thumbs.db
+
+############################
+# ASP.NET Core
+############################
+appsettings.Development.json
+appsettings.Local.json
+
+############################
+# Secrets
+############################
+secrets.json
+*.pfx
+
+############################
+# Publish output
+############################
+publish/
+wwwroot/lib/
+
+############################
+# EF Core
+############################
+Migrations/*.Designer.cs
+Migrations/*.csproj
